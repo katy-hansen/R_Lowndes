@@ -1,0 +1,215 @@
+---
+title: "Funding_Allocation"
+author: "Katy Hansen"
+date: "9/18/2018"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+#Load libraries 
+```{r, include=FALSE}
+loadPkg <- function(toLoad){
+  for(lib in toLoad){
+    if(! lib %in% installed.packages()[,1])
+    { install.packages(lib, repos='http://cran.rstudio.com/') }
+    suppressMessages( library(lib, character.only=TRUE) ) }
+  }
+
+# Load libraries
+pkgs <- c('units','RColorBrewer', 'cshapes', 'ape', 'grid', 'spdep', 'magrittr', 'stargazer', 'effects','rgeos','rgdal','sp','sf', 'raster','tigris','tidyverse','tidycensus','acs','readstata13','data.table','humaniformat','stringr','readxl','lubridate','plotly','ggplot2','effects','lmtest','plm','stargazer','purrr','foreign','car','here','censusapi','stats')
+
+loadPkg(pkgs)
+```
+## Load & prep USDA funding data
+```{r, warning=FALSE, error=FALSE, message=FALSE, echo=FALSE, results='asis'}
+##Read in funding data
+rawUSDA<-read_csv('USDA_Funds.csv')
+colnames(rawUSDA)[colnames(rawUSDA)=="State Abbr"] <- "State"
+
+AL_USDA<-rawUSDA%>%filter(State=="AL")
+#check_Facility <- AL_USDA %>% group_by(Facility_Name) %>%summarise(n())
+
+AL_USDA$ww_Funding<-ifelse(str_detect(AL_USDA$Facility_Name, "Sewer|Wastewater|Sewer-cost|Waste Water|Water/Sewer"),1,0)
+AL_USDA_ww<-AL_USDA%>%filter(ww_Funding==1)
+
+AL_USDA_ww$Place <-str_replace_all(AL_USDA_ww$Customer_Name,'W&FPA|W & F P A|W.A.|FPA|WW&SB|Co. AL Wtr Cooperative, Inc.|wtr& Swr Bd Of The Tn Of|c/o|, AL, THE UT BOARD OF THE CY OF|W W&SB Of The Town Of|W&S|THE UTILITIES BD OF TN|Sewer & Fire Prot Auth|WW & S', " ")%>%
+str_to_title(.) %>% str_replace_all(.,"Authority|Waterworks|Water|County |Works|City|Town|Village|District|Of|System|And|Fire|Protection|Utilities|Board|Util|BdInc|Comm|Co|The|Wsb|Sewer|Wtr|Wk|Bd|Gas|Serv|Inc|Supply", " ")%>%
+  str_replace_all(., "[[:punct:]]", "") %>% 
+  str_trim(.)  
+
+#Rename slightly off places
+AL_USDA_ww$Place[str_detect(AL_USDA_ww$Place, 'rdova')]<-"Cordova"
+AL_USDA_ww$Place[str_detect(AL_USDA_ww$Place, 'ffeeville')]<-"Coffeeville"
+AL_USDA_ww$Place[str_detect(AL_USDA_ww$Place, 'Dodge')]<-"Dodge City"
+
+# Decades from financial data
+AL_USDA_ww$FY<-as.numeric(AL_USDA_ww$FY,na.rm=T)
+AL_USDA_ww$Decade<-AL_USDA_ww$FY-(AL_USDA_ww$FY%% 10)
+
+check_Place<-AL_USDA_ww%>%group_by(Place,Decade)%>%summarise(n())
+
+#create vector of decades for Census
+USDA_Decades <- unique(AL_USDA_ww$Decade) %>% na.omit 
+
+#remove dollar sign & convert to numeric
+
+AL_USDA_ww$Loan<-gsub("\\$", "", AL_USDA_ww$Loan_Amt) %>% str_replace_all(., "[[:punct:]]", "") %>% 
+  str_trim(.) %>% 
+  as.numeric(.)
+
+AL_USDA_ww$Grant<-gsub("\\$", "", AL_USDA_ww$Grant_At) %>% str_replace_all(., "[[:punct:]]", "") %>% 
+  str_trim(.) %>% 
+  as.numeric(.)
+
+AL_USDA_ww$Total<-gsub("\\$", "", AL_USDA_ww$Total_Amt) %>% str_replace_all(., "[[:punct:]]", "") %>% 
+  str_trim(.) %>% 
+  as.numeric(.)
+
+AL_USDA_ww_sum<-AL_USDA_ww %>%
+  group_by(Place,Decade) %>% 
+  summarize(Total_Loan_Amt=sum(Loan),
+            Total_Grant_Amt=sum(Grant),
+            Total_Amt=sum(Total)) #groups precints into jurisdiction 
+```
+
+#Load & prep EPA funding data 
+```{r, include=FALSE}
+#load data from AL CWSRF IUPs
+```
+
+##Census data
+```{r, warning=FALSE, error=FALSE, message=FALSE, echo=FALSE, results='asis'}
+rawCensus1990<-read_csv('Census_1990_inflated2010.csv')
+rawCensus2000<-read_csv('Census_2000_inflated2010.csv')
+rawACS2010<-read_csv('ACS_2006--2010.csv')
+
+#all in 2010 inflated dollars
+Census1990<-rawCensus1990[c("Qualifying Name","FIPS","Total Population","Population Density (per sq. mile)","Persons: White","Persons: Black","Total Population: Hispanic","Persons 25 years and over","Persons 25 years and over: Bachelor's degree or more","Population 16 years and over","Population 16 years and over: In labor force","Median Household Income In 2010 Dollars [Dollars adjusted for inflation to match value in 2010]",'Occupied housing units', 'Occupied housing units: Owner occupied','Persons 18 to 64 for whom poverty status is determined','Income in 1989 below poverty level: 18 to 64 years')]
+
+setnames(Census1990, old = c("Qualifying Name","FIPS","Total Population","Population Density (per sq. mile)","Persons: White","Persons: Black","Total Population: Hispanic","Persons 25 years and over","Persons 25 years and over: Bachelor's degree or more","Population 16 years and over","Population 16 years and over: In labor force","Median Household Income In 2010 Dollars [Dollars adjusted for inflation to match value in 2010]",'Occupied housing units', 'Occupied housing units: Owner occupied','Persons 18 to 64 for whom poverty status is determined','Income in 1989 below poverty level: 18 to 64 years'), new = c("Name","FIPS","Pop_Total","Pop_Density","White","Black","Hispanic","Pop_25yo","Bachelor","Pop_16yo","Employed","MHI",'No_housing', 'Owner','Pop_18to64','Pop_poverty'))
+
+Census1990$Decade<-1990
+Census1990 <- Census1990[-c(1), ] #Drop identifiers
+
+#2000
+Census2000<-rawCensus2000[c("Qualifying Name","FIPS","Total Population","Population Density (per sq. mile)","White Alone","Black or African American Alone","Hispanic or Latino","Population 25 years and over","Population 25 years and over: Bachelor's degree or more","Population 16 years and over","Population 16 years and over: In labor force","Median household income In 2010 Dollars [Dollars adjusted for inflation to match value in 2010]",'Occupied Housing Units', 'Occupied Housing Units: Owner Occupied','Population Age 18 to 64 for whom poverty status is determined','Population Age 18 to 64 for whom poverty status is determined: Living in Poverty')]
+
+setnames(Census2000, old = c("Qualifying Name","FIPS","Total Population","Population Density (per sq. mile)","White Alone","Black or African American Alone","Hispanic or Latino","Population 25 years and over","Population 25 years and over: Bachelor's degree or more","Population 16 years and over","Population 16 years and over: In labor force","Median household income In 2010 Dollars [Dollars adjusted for inflation to match value in 2010]",'Occupied Housing Units', 'Occupied Housing Units: Owner Occupied','Population Age 18 to 64 for whom poverty status is determined','Population Age 18 to 64 for whom poverty status is determined: Living in Poverty'), new = c("Name","FIPS","Pop_Total","Pop_Density","White","Black","Hispanic","Pop_25yo","Bachelor","Pop_16yo","Employed","MHI",'No_housing', 'Owner','Pop_18to64','Pop_poverty'))
+
+Census2000$Decade<-2000
+Census2000 <- Census2000[-c(1), ] #Drop identifiers
+
+ACS2010<-rawACS2010[c("Qualifying Name","FIPS","Total Population","Population Density (Per Sq. Mile)", "Total Population: White Alone","Total Population: Black or African American Alone","Total Population: Hispanic or Latino","Population 25 Years and Over:","Population 25 Years and Over: Bachelor's Degree or More","Population 16 Years and Over:","Population 16 Years and Over: in Labor Force","Median Household Income (In 2010 Inflation Adjusted Dollars)",'Occupied Housing Units:', 'Occupied Housing Units: Owner Occupied','Population Age 18 to 64 for Whom Poverty Status  Is Determined:','Population Age 18 to 64 for Whom Poverty Status  Is Determined: Living in Poverty')]
+
+setnames(ACS2010, old = c("Qualifying Name","FIPS","Total Population","Population Density (Per Sq. Mile)", "Total Population: White Alone","Total Population: Black or African American Alone","Total Population: Hispanic or Latino","Population 25 Years and Over:","Population 25 Years and Over: Bachelor's Degree or More","Population 16 Years and Over:","Population 16 Years and Over: in Labor Force","Median Household Income (In 2010 Inflation Adjusted Dollars)",'Occupied Housing Units:', 'Occupied Housing Units: Owner Occupied','Population Age 18 to 64 for Whom Poverty Status  Is Determined:','Population Age 18 to 64 for Whom Poverty Status  Is Determined: Living in Poverty'), new = c("Name","FIPS","Pop_Total","Pop_Density","White","Black","Hispanic","Pop_25yo","Bachelor","Pop_16yo","Employed","MHI",'No_housing', 'Owner','Pop_18to64','Pop_poverty'))
+
+ACS2010$Decade<-2010
+ACS2010 <- ACS2010[-c(1), ] #Drop identifiers
+
+#rbind into 1 dataset
+census_data <- rbind.fill(Census1990,Census2000,ACS2010)
+
+```
+
+#Merge funding & demographic data 
+```{r, include=FALSE}
+#clean entity name
+census_data$Place <-str_replace_all(census_data$Name,"City|city|Town|town|CDP|Alabama|of", " ")%>%
+  str_replace_all(., "[[:punct:]]", "") %>% 
+  str_trim(.) 
+
+check_Place <- census_data %>% group_by(Place) %>%summarise(n())
+#Decide what to do about Pinson-Clay-Chalkville
+# West End-Cobb Town
+
+#merge by entity, decade
+Allocation<-merge(census_data, AL_USDA_ww_sum, by = c("Place","Decade"), all=T)# without all.x=TRUE --> drops 5000 obs from sample
+
+Allocation[,5:18]<-sapply(Allocation[,5:18],as.numeric)
+
+Allocation$pct_white<-Allocation$White/Allocation$Pop_Total
+Allocation$pct_PoC<-1-(Allocation$White/Allocation$Pop_Total)
+Allocation$pct_Black<-Allocation$Black/Allocation$Pop_Total
+Allocation$pct_Hispanic<-Allocation$Hispanic/Allocation$Pop_Total
+Allocation$pct_Bachelors<-Allocation$Bachelor/Allocation$Pop_25yo
+Allocation$pct_Employed<-Allocation$Employed/Allocation$Pop_16yo
+Allocation$pct_Owner<-Allocation$Owner/Allocation$No_housing
+Allocation$pct_Poverty<-Allocation$Pop_poverty/Allocation$Pop_18to64
+
+Allocation$Recipient<-ifelse(Allocation$Total_Amt>0,1,0)
+Allocation$Recipient[is.na(Allocation$Recipient)] <- 0
+
+```
+
+#Descriptive stats
+```{r, include=FALSE}
+#decade FEs?
+des_stats <- ddply(Allocation, .(Recipient), summarize,
+							Recipient = Recipient[1], 
+							Total_Population=round(mean(Pop_Total,na.rm=T),2),
+							Pop_Density = round(mean(Pop_Density, na.rm = T), 2),
+							pct_white = round(mean(pct_white, na.rm = T), 2),
+							MHI = round(mean(MHI, na.rm = T), 0),
+							pct_Poverty = round(mean(pct_Poverty, na.rm = T), 2),
+							pct_Bachelors = round(mean(pct_Bachelors, na.rm = T), 2),
+							pct_Employed = round(mean(pct_Employed, na.rm = T), 2),
+							pct_Owner = round(mean(pct_Owner, na.rm = T), 2))
+
+```
+
+#Logit models 
+```{r, include=FALSE}
+Allocation$log_MHI<- log(Allocation$MHI)
+Allocation$log_Pop_Total<-log(Allocation$Pop_Total)
+
+Allocation$Decade <- as.factor(Allocation$Decade)
+
+
+m1 <-glm(Recipient ~  pct_white + log_MHI + pct_Poverty + pct_Bachelors + pct_Owner +log_Pop_Total, data = Allocation, family = "binomial"(link = "logit"))
+
+#for interpreatation
+m1.coeff<-coef(m1)
+m1.se<-summary(m1)$coefficients[, 2]
+#m1.cis <- confint(m1)
+m1.OR<-exp(coef(m1)) #transform the coefficients to make them easier to interpret
+
+m1.out <- cbind("Coefficients" =m1.coeff, "Standard Errors" = m1.se, "Odds Ratio" = m1.OR)
+#'Confidence Intervals' =m1.cis, 
+
+#OLS with $/capita
+#divide loans & grants
+```
+
+
+#Tables 
+```{r, warning=FALSE, error=FALSE, message=FALSE, echo=FALSE, results='asis'}
+#load data from AL CWSRF IUPs
+
+## Descriptive states
+stargazer(t(des_stats), title = "Descriptive statistics CDPs with and without USDA Funding",summary = FALSE)
+
+#Model
+stargazer(m1.out,
+          digits=2, 
+          digits.extra=2,
+          title = "Model")
+
+```
+
+#Graphs
+```{r, results='asis'}
+#plot(allEffects(m1))
+
+plot(Effect(c("pct_white"), m1),xlab="Percentage of white people in the CDP",ylab="Predicted Probability of Receipt", main="Correlation between Receipt and Racial Composition")
+
+plot(Effect(c("log_MHI"),m1),xlab="logged MHI (dollars)", ylab="Predicted Probability of Receipt",main="Correlation between Receipt and MHI")
+
+plot(Effect(c("pct_Poverty"), m1),xlab="Percent of Population Below the Poverty Line",ylab="Predicted Probability of Receipt", main="Correlation between Receipt and Poverty Level")
+
+plot(Effect(c("pct_Bachelors"), m1),xlab="Percent of Population with at least a Bachelors Degree",ylab="Predicted Probability of Receipt", main="Correlation between Receipt and Education")
+
+plot(Effect(c("pct_Owner"), m1),xlab="Percentage of housing units in the CDP that are owner occupied",ylab="Predicted Probability of Receipt", main="Correlation between Receipt and Homeownership Level")
+```
+
+```
