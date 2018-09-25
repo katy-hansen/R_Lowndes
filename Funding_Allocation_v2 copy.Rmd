@@ -9,6 +9,7 @@ output:
 
 #Load libraries 
 ```{r, include=FALSE}
+#comment
 loadPkg <- function(toLoad){
   for(lib in toLoad){
     if(! lib %in% installed.packages()[,1])
